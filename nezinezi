@@ -19,12 +19,12 @@
   const WAIT_MS_AFTER_CLICK = 0;
 
   // --- 通知機能設定 ---
-  const ENABLE_NOTIFICATION = true;  // trueで通知ON、falseで通知OFF
+  const ENABLE_NOTIFICATION = false;  // trueで通知ON、falseで通知OFF
   const PUSHOVER_USER_KEY = ''; // あなたのPushoverユーザーキー
   const PUSHOVER_APP_TOKEN = ''; // あなたのPushoverアプリトークン
 
   // --- 更新機能設定 ---
-  const ENABLE_AUTO_RELOAD = true;   // trueで更新機能ON、falseでOFF
+  const ENABLE_AUTO_RELOAD = false;   // trueで更新機能ON、falseでOFF
   const RELOAD_SECONDS_OFFSET = 5;   // 秒数のズレ(sec)
 
   const DEBUG = true;
