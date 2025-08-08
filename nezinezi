@@ -1,0 +1,185 @@
+// ==UserScript==
+// @name         ねじねじ豊くん v3
+// @namespace    http://tampermonkey.net/
+// @version      6.00
+// @description  JRA席自動選択＋通知＋分は5の倍数固定・秒は任意指定更新機能付き
+// @match        https://jra-tickets.jp/SeatKindSelect*
+// @grant        none
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  // === 設定 ===
+  const SEAT_PAIRS = [
+    { block: 2, amount: 2 }, // { block: 席ID, amount: 人数 } ※エルムテーブル(8)は人数4で固定
+    { block: 3, amount: 1 }, //上から取りたい席の優先順に
+  ];
+
+  const WAIT_MS_AFTER_CLICK = 0;
+
+  // --- 通知機能設定 ---
+  const ENABLE_NOTIFICATION = true;  // trueで通知ON、falseで通知OFF
+  const PUSHOVER_USER_KEY = ''; // あなたのPushoverユーザーキー
+  const PUSHOVER_APP_TOKEN = ''; // あなたのPushoverアプリトークン
+
+  // --- 更新機能設定 ---
+  const ENABLE_AUTO_RELOAD = true;   // trueで更新機能ON、falseでOFF
+  const RELOAD_SECONDS_OFFSET = 5;   // 秒数のズレ(sec)
+
+  const DEBUG = true;
+
+  let currentIndex = 0;
+  let observer = null;
+  let reloadTimerId = null;
+
+  // === ログ関数 ===
+  function log(...args) {
+    if (DEBUG) console.log('[JRA Script]', ...args);
+  }
+
+  // === 通知送信関数 ===
+  function sendPushoverNotification(message) {
+    if (!ENABLE_NOTIFICATION) {
+      log('[通知] 🔕 通知機能OFFのため送信なし');
+      return;
+    }
+    if (!PUSHOVER_USER_KEY || !PUSHOVER_APP_TOKEN) {
+      log('[通知] 🔕 Pushoverキー未設定');
+      return;
+    }
+
+    const data = new URLSearchParams({
+      token: PUSHOVER_APP_TOKEN,
+      user: PUSHOVER_USER_KEY,
+      message,
+    });
+
+    fetch('https://api.pushover.net/1/messages.json', {
+      method: 'POST',
+      body: data,
+    })
+      .then(res => res.ok ? res.json() : Promise.reject(res.status))
+      .then(json => log('[通知] Pushover送信成功', json))
+      .catch(err => console.error('[通知] ❌ Pushover送信失敗:', err));
+  }
+
+  // === 監視とタイマー停止関数 ===
+  function stopScript() {
+    if (observer) {
+      observer.disconnect();
+      observer = null;
+      log('🛑 監視停止');
+    }
+    if (reloadTimerId !== null) {
+      clearInterval(reloadTimerId);
+      reloadTimerId = null;
+      log('🛑 自動更新タイマー停止');
+    }
+  }
+
+  // === 希望席数選択処理 ===
+  function selectSeatAmount(seatBlockIndex, desiredAmount) {
+    const selectorPrefix = `input[type="hidden"][id^="Main_SeatListItemRepeater_SeatListItem_${seatBlockIndex}_SeatAmountRepeater_${seatBlockIndex}_SeatAmountLinkButton_"]`;
+    const allInputs = document.querySelectorAll(selectorPrefix);
+
+    for (const input of allInputs) {
+      if (parseInt(input.value, 10) === desiredAmount) {
+        const seatLink = input.closest('li')?.querySelector('a');
+        if (seatLink) {
+          seatLink.click();
+          log(`✅ ブロック${seatBlockIndex} - ${desiredAmount}席をクリックしました`);
+          sendPushoverNotification(`🎫 ブロック${seatBlockIndex}で${desiredAmount}席を自動選択しました`);
+          stopScript(); // 選択成功で監視・更新停止
+          return true;
+        }
+      }
+    }
+    log(`❗ ブロック${seatBlockIndex} - ${desiredAmount}席のリンクが見つかりません`);
+    return false;
+  }
+
+  // === 次のペアを試す処理 ===
+  function tryNextPair() {
+    if (currentIndex >= SEAT_PAIRS.length) {
+      log('❌ 全ペア試しましたが空きなし');
+      return;
+    }
+
+    const { block, amount } = SEAT_PAIRS[currentIndex];
+    log(`🔍 試行中: ブロック=${block}, 席数=${amount}`);
+
+    const panel = document.querySelector(`#Main_SeatListItemRepeater_SeatListItem_${block}_PnlAutoSelectButton_${block}`);
+
+    if (panel && panel.offsetParent !== null) {
+      const label = panel.querySelector('label.btn_01');
+      if (label && !label.classList.contains('btn_off')) {
+        label.click();
+        setTimeout(() => {
+          if (!selectSeatAmount(block, amount)) {
+            currentIndex++;
+            tryNextPair();
+          }
+        }, WAIT_MS_AFTER_CLICK);
+        return;
+      }
+    }
+
+    log(`⛔ ブロック${block}は押せない状態 → 次のペアへ`);
+    currentIndex++;
+    tryNextPair();
+  }
+
+  // === ボタンの変化を監視し試行する処理 ===
+  function watchAutoSelectButton() {
+    observer = new MutationObserver(() => {
+      tryNextPair();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    log('⏱️ ボタン監視開始');
+  }
+
+  // === 5分ごと（分は5の倍数固定、秒は任意指定）にページ更新 ===
+  function startReloadWatcher() {
+    if (!ENABLE_AUTO_RELOAD) {
+      log('[JRA Script] 🔕 自動更新機能OFFのため開始しません');
+      return;
+    }
+    log(`[JRA Script] ⏱️ 自動更新監視開始 分は5の倍数、秒は${RELOAD_SECONDS_OFFSET}秒`);
+
+    reloadTimerId = setInterval(() => {
+      const now = new Date();
+      const mm = now.getMinutes();
+      const ss = now.getSeconds();
+
+      // mmが5の倍数かつ秒がRELOAD_SECONDS_OFFSETなら更新
+      if (mm % 5 === 0 && ss === RELOAD_SECONDS_OFFSET) {
+        const url = window.location.href;
+        log(`[JRA Script] 🪟 自動更新実行 → ${url}`);
+
+        const newWindow = window.open(url, '_blank');
+
+        if (newWindow) {
+          window.close();
+        } else {
+          console.warn('[JRA Script] ❌ 自動更新に失敗（ポップアップブロックの可能性）');
+        }
+      }
+    }, 1000);
+  }
+
+  // === 初期化処理 ===
+  function init() {
+    log('初期化開始');
+    watchAutoSelectButton();
+    tryNextPair();
+    startReloadWatcher();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+
+})();
