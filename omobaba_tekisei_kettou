@@ -1,0 +1,138 @@
+// ==UserScript==
+// @name         競馬ラボ：種牡馬複勝率リンク（横向き版、高速・右詰め列対応）
+// @namespace    https://keibalab.jp/
+// @version      2.4
+// @description  良以外の馬場で、種牡馬のittaiページリンクと複勝率差を表示（結果を下行・右詰め列に対応）
+// @match        https://www.keibalab.jp/db/race/*
+// @grant        GM_xmlhttpRequest
+// @connect      keibalab.jp
+// @connect      ittai.net
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // --- 馬場判定 ---
+    const babaInfoElem = document.querySelector('div.fL.ml10 > div > div > ul > li:nth-child(2)');
+    if(!babaInfoElem) return;
+    const babaType = babaInfoElem.textContent.trim();
+    if(babaType === '良') return;
+
+    // --- 芝・ダート判定 ---
+    const courseInfoElem = document.querySelector('div.fL.ml10 > ul > li:nth-child(2)');
+    const courseType = courseInfoElem ? (courseInfoElem.textContent.trim().startsWith('芝') ? '芝' : 'ダート') : null;
+
+    // --- 横向きページURL ---
+    const yokoUrl = location.href.replace(/tate$/, 'yoko');
+
+    GM_xmlhttpRequest({
+        method: "GET",
+        url: yokoUrl,
+        onload: function(res) {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(res.responseText, "text/html");
+
+            // --- 種牡馬リンク（上から順）を取得 ---
+            const sireLinks = Array.from(doc.querySelectorAll(
+                "#top > table > tbody > tr > td.bameiBox.noWrap > dl > dd.chichi3 > a"
+            ));
+            const sireIds = sireLinks.map(a => {
+                const m = a.href.match(/\/db\/breed\/(\d+)\//);
+                return m ? m[1] : null;
+            });
+
+            // --- 表本体取得 ---
+            const tbody = document.querySelector("#top > table > tbody");
+            const baseRow = tbody.querySelector("tr:nth-child(4)");
+            if (!baseRow) return;
+
+            // 新しい結果行を作成
+            const resultRow = document.createElement("tr");
+            resultRow.style.backgroundColor = "#f9f9f9";
+            resultRow.style.textAlign = "center";
+            resultRow.style.fontSize = "0.85em";
+
+            // 列数をもとに空のセルを作成
+            const colCount = baseRow.children.length;
+            const cells = Array.from({ length: colCount }, () => {
+                const td = document.createElement("td");
+                td.textContent = "";
+                return td;
+            });
+            cells.forEach(td => resultRow.appendChild(td));
+            baseRow.insertAdjacentElement("afterend", resultRow);
+
+            // 並列処理：ittai.netアクセスを5件ずつ
+            const maxParallel = 5;
+            let active = 0;
+            let index = 0;
+
+            const next = () => {
+                if (index >= sireIds.length) return;
+                const i = index++;
+                const sireId = sireIds[i];
+                if(!sireId) return next();
+
+                const ittaiUrl = `https://ittai.net/RK/father_index.php?id=${sireId}&type=3&race=JRA`;
+                active++;
+                GM_xmlhttpRequest({
+                    method: "GET",
+                    url: ittaiUrl,
+                    onload: function(resIttai){
+                        const parser = new DOMParser();
+                        const docIttai = parser.parseFromString(resIttai.responseText, "text/html");
+
+                        const allTables = Array.from(docIttai.querySelectorAll('table.table'));
+                        let table = null;
+                        if(courseType === '芝') table = allTables[18];
+                        else if(courseType === 'ダート') table = allTables[19];
+
+                        let diff = null;
+                        if(table){
+                            const babaNames = ['良','稍','重','不'];
+                            const babaData = {};
+                            babaNames.forEach((baba, idx)=>{
+                                const tdElem = table.querySelector(`tbody > tr:nth-child(${idx+1}) > td:nth-child(9)`);
+                                if(tdElem){
+                                    const value = parseFloat(tdElem.textContent.trim().split('%')[0]) || 0;
+                                    babaData[baba] = value;
+                                }
+                            });
+                            if(babaData['良'] != null && babaData[babaType] != null){
+                                diff = babaData[babaType] - babaData['良'];
+                            }
+                        }
+
+                        // --- 表示位置（右詰め）を算出 ---
+                        const displayIndex = colCount - 1 - i;
+                        const cell = cells[displayIndex];
+
+                        if(diff != null){
+                            const a = document.createElement("a");
+                            a.href = ittaiUrl;
+                            a.target = "_blank";
+                            a.style.color = diff > 0 ? "green" : "red";
+                            a.textContent = `${diff>0?'+':'-'}${diff.toFixed(1)}%`;
+                            cell.textContent = '';
+                            cell.appendChild(a);
+                        } else {
+                            cell.textContent = "-";
+                        }
+
+                        active--;
+                        next();
+                    },
+                    onerror: () => {
+                        const displayIndex = colCount - 1 - i;
+                        cells[displayIndex].textContent = "ERR";
+                        active--;
+                        next();
+                    },
+                    timeout: 5000
+                });
+            };
+
+            for (let j = 0; j < maxParallel; j++) next();
+        }
+    });
+})();
