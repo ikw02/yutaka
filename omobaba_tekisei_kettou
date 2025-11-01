@@ -104,7 +104,7 @@
                         }
 
                         // --- 表示位置（右詰め）を算出 ---
-                        const displayIndex = colCount - 2 - i;
+                        const displayIndex = 17 - i;
                         const cell = cells[displayIndex];
 
                         if(diff != null){
